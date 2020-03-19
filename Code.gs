@@ -13,6 +13,7 @@ function checkNewRowToProcess() {
   try {
     var lastOnGoingCheckTimestamp = doProjectProperty_("LastOnGoingCheckTimestamp");
     var now = new Date();
+    var storesAlreadyProcessed = [];
     if (true || lastOnGoingCheckTimestamp == "" || (now.getTime() - lastOnGoingCheckTimestamp) > 7*60*1000) {
       doProjectProperty_("LastOnGoingCheckTimestamp",now.getTime());
       var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Sola Color Selection");
@@ -20,10 +21,41 @@ function checkNewRowToProcess() {
       sheet.sort(1,false);
       var formValues = sheet.getDataRange().getValues();
       for (var i = (formValues.length-1); i >= 1; i--) {
-        if (formValues[i][lastColumnIndex-1] != "X" && formValues[i][lastColumnIndex-1] != "on-going") {
-          sheet.getRange(i+1,lastColumnIndex).setValue("on-going");
-          if (processRow(i))
-            sheet.getRange(i+1,lastColumnIndex).setValue("X");
+        if (formValues[i][lastColumnIndex-1] != "X" && formValues[i][lastColumnIndex-1] != "on-going" && formValues[i][lastColumnIndex-1] != "duplicate - different answer" && formValues[i][lastColumnIndex-1] != "duplicate - similar answer") {
+          var isNewSubmission = true;
+          var isDuplicateNotification = false;
+          for (var j=0;j<storesAlreadyProcessed.length;j++) {
+            var isDuplicate = (storesAlreadyProcessed[j][2] == formValues[i][2]); // check if same location
+            if (isDuplicate) {
+              //Logger.log("Compare "+storesAlreadyProcessed[j][2]+" with "+formValues[i][2]);
+              var isExactMatch = true;
+              for (var k=3;k<(storesAlreadyProcessed[j].length-1);k++) {
+                if (storesAlreadyProcessed[j][k] != formValues[i][k]) {
+                  //Logger.log("Different!");
+                  isExactMatch = false;
+                  break;
+                }
+              }
+              isNewSubmission = false;
+              isDuplicateNotification = !isExactMatch;
+              break;
+            }
+          }
+          if (isNewSubmission) {
+            sheet.getRange(i+1,lastColumnIndex).setValue("on-going");
+            if (processRow(i))
+              sheet.getRange(i+1,lastColumnIndex).setValue("X");
+          }
+          else if (isDuplicateNotification) {
+            sendDuplicateMail(i);
+            sheet.getRange(i+1,lastColumnIndex).setValue("duplicate - different answer");
+          }
+          else {
+            sheet.getRange(i+1,lastColumnIndex).setValue("duplicate - similar answer");
+          }
+        }
+        else if (formValues[i][lastColumnIndex-1] == "X") {
+          storesAlreadyProcessed.push(formValues[i]);
         }
       }      
       doProjectProperty_("LastOnGoingCheckTimestamp","");
@@ -36,6 +68,46 @@ function checkNewRowToProcess() {
   }
 }
 
+function sendDuplicateMail(row) {
+var formValues = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Sola Color Selection").getDataRange().getValues();
+  var storeID = "";
+  var fixturePackage = "";
+  var colorScheme = "";
+  var shampooBowlColor = "";
+  for (var i = 1; i < (formValues[row].length-1); i++) {
+    formValues[row][i] = (formValues[row][i] instanceof String)?(formValues[row][i].trim()):formValues[row][i];
+    switch (formValues[0][i]) {
+      case "Location Name: PLEASE DO NOT ALTER THIS FIELD":
+        storeID = formValues[row][i];
+        break;
+      case "Fixture Package?":
+        fixturePackage = formValues[row][i];
+        break;
+      case "Select your cabinet & counter-top color combination:":
+        if (formValues[row][i] != "")
+          colorScheme = formValues[row][i].split(" ")[0];
+        break;
+      case "Select your Shampoo Bowl Color:":
+        shampooBowlColor = formValues[row][i];
+      default:
+        break;
+    }
+  }
+  var mailTo = (TESTING)?Session.getEffectiveUser().getEmail():"solateam@sympatecoinc.com";    
+  var options = {};
+  var mailBody = "Sola Team,";
+  mailBody += "<br/><br/>Duplicate submission has been received for "+storeID+" with the following information:";
+  mailBody += "<br/>- Fixture Package: "+fixturePackage;
+  mailBody += "<br/>- Color Scheme: "+colorScheme;
+  mailBody += "<br/>- Shampoo Bowl Color: "+shampooBowlColor;
+  
+  options['htmlBody'] = mailBody;
+  if (!TESTING) {
+    options['bcc'] = "sl.sympro@sympatecoinc.com, gillianm@sympatecoinc.com";
+  }                    
+  MailApp.sendEmail(mailTo, storeID+": Review Color Scheme Submittal **AC ACTION ITEM**", "", options);
+}
+
 function processRow(row) {
   var formValues = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Sola Color Selection").getDataRange().getValues();
   var storeID = "";
@@ -45,7 +117,7 @@ function processRow(row) {
   for (var i = 1; i < (formValues[row].length-1); i++) {
     formValues[row][i] = (formValues[row][i] instanceof String)?(formValues[row][i].trim()):formValues[row][i];
     switch (formValues[0][i]) {
-      case "Location Name?":
+      case "Location Name: PLEASE DO NOT ALTER THIS FIELD":
         storeID = formValues[row][i];
         break;
       case "Fixture Package?":
@@ -85,7 +157,7 @@ function processRow(row) {
     if (!statusUpdateAsanaTasks.successFixturePackageTask)
       mailBody += "<br/><br/>Asana \"Fixture Package\" task not found. Please copy the missing task from the Asana template to your project. Then contact the Sympro manager to re-process the Color Selection form response.";
     if (!statusUpdateAsanaTasks.successColorSchemeReceivedTask)
-      mailBody += "<br/><br/>Asana \"Color Scheme Received\" task not found. Please copy the missing task from the Asana template to your project. Then contact the Sympro manager to re-process the Color Selection form response.";
+      mailBody += "<br/><br/>Asana \"Color Selection Received\" task not found. Please copy the missing task from the Asana template to your project. Then contact the Sympro manager to re-process the Color Selection form response.";
     
     var mailTo = (TESTING)?Session.getEffectiveUser().getEmail():"solateam@sympatecoinc.com";    
     var options = {};
@@ -100,6 +172,18 @@ function processRow(row) {
 
 function updateStoreInSolaVista(storeID, fixturePackage, colorScheme, shampooBowlColor) {
   var spreadsheet = SpreadsheetApp.openById(SOLA_VISTA_SPREADSHEET);
+  
+  var sheet = spreadsheet.getSheetByName("Store# List");
+  var storeList = sheet.getDataRange().getValues();
+  var alternativeStoreID = "";
+  for (var i=0;i<storeList.length;i++) {
+    var currentStoreLocationWithoutID = "SL-"+storeList[i][3];
+    var currentStoreLocationWithID = storeList[i][5];
+    if (currentStoreLocationWithoutID == storeID) {
+      alternativeStoreID = currentStoreLocationWithID;
+      break;
+    }
+  }  
   var now = new Date();
   var currentYear = now.getFullYear();
   var sheet = spreadsheet.getSheetByName("2020 Asana test");
@@ -107,7 +191,7 @@ function updateStoreInSolaVista(storeID, fixturePackage, colorScheme, shampooBow
   var rowIndex = -1;
   for (var i=0;i<storeList.length;i++) {
     var currentStoreID = storeList[i][0];
-    if (storeID == currentStoreID) {
+    if (storeID == currentStoreID || (alternativeStoreID != "" && currentStoreID == alternativeStoreID)) {
       rowIndex = i+4;
       var ac = storeList[i][1];
       sheet.getRange(rowIndex,26).setValue(colorScheme);
@@ -116,6 +200,7 @@ function updateStoreInSolaVista(storeID, fixturePackage, colorScheme, shampooBow
       return {success: true, ac:ac}
     }
   }
+    
   if (rowIndex == -1)
     return {success: false, ac: ""};
 }
@@ -128,13 +213,13 @@ function updateAsanaTasks(storeID, fixturePackage, colorScheme, shampooBowlColor
     return {successFixturePackageTask: false, successColorSchemeReceivedTask:false, isProjectFoundInAsana: false};
   for (var i=0;i<tasks.length;i++) {
     var id = tasks[i].gid;
-    if (tasks[i].name == "Fixture Package") {
-      updateAsanaTaskName(tasks[i].gid, "Fixture Package "+fixturePackage);
+    if (tasks[i].name.trim() == "Fixture Package") {
+      updateAsanaTaskName(tasks[i].gid, "Fixture Package: "+fixturePackage);
       markAsanaTaskAsCompleted(tasks[i].gid);
       successFixturePackageTask = true;
     }
-    else if (tasks[i].name == "Color Scheme Received") {
-      updateAsanaTaskName(tasks[i].gid, "Color Scheme Received "+colorScheme+"/"+shampooBowlColor.toLowerCase());
+    else if (tasks[i].name.trim() == "Color Selection Received") {
+      updateAsanaTaskName(tasks[i].gid, "Color Selection Received: "+colorScheme+"/"+shampooBowlColor.toLowerCase());
       markAsanaTaskAsCompleted(tasks[i].gid);
       successColorSchemeReceivedTask = true;
     }
@@ -165,3 +250,7 @@ function doProjectProperty_(key, value)
     return JSON.parse(properties.getProperty(key)) || "";
   } // if value is not empty
 } // doProjectProperty_()
+
+function sendErrorLog(activityName) {
+  MailApp.sendEmail("chris.basura@gmail.com", activityName, Logger.getLog());
+}
